@@ -39,6 +39,19 @@ export class TraceLogger {
 		return createHash("sha256").update(content, "utf8").digest("hex")
 	}
 
+	private async getContentForHash(cwd: string, event: TraceEvent, filePathValue?: string): Promise<string> {
+		if (filePathValue && event.status === "success") {
+			const resolvedPath = path.isAbsolute(filePathValue) ? filePathValue : path.resolve(cwd, filePathValue)
+			try {
+				return await fs.readFile(resolvedPath, "utf8")
+			} catch {
+				// Fall back to tool payload content if file read fails.
+			}
+		}
+
+		return event.content ?? event.params.content ?? ""
+	}
+
 	private async classifyChange(cwd: string, filePathValue?: string): Promise<SemanticClassification | undefined> {
 		if (!filePathValue) {
 			return undefined
@@ -60,7 +73,7 @@ export class TraceLogger {
 		const filePathValue = event.file_path ?? event.params.path ?? event.params.file_path
 		const startLine = event.start_line ?? this.toNumber(event.params.start_line)
 		const endLine = event.end_line ?? this.toNumber(event.params.end_line)
-		const content = event.content ?? event.params.content ?? ""
+		const content = await this.getContentForHash(cwd, event, filePathValue)
 		const contentHash = this.hashContent(content)
 		const gitSha = event.git_sha ?? process.env.GIT_COMMIT_SHA ?? "unknown"
 		const intentId = event.intent_id ?? "INT-001"

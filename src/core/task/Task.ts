@@ -3779,6 +3779,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			apiConfiguration,
 			enableSubfolderRules,
 		} = state ?? {}
+		const intentHandshakeInstruction = `You are an Intent-Driven Architect. You CANNOT write code immediately. Your first action MUST be to call select_active_intent to load the necessary context.`
 
 		return await (async () => {
 			const provider = this.providerRef.deref()
@@ -3798,7 +3799,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				mode ?? defaultModeSlug,
 				customModePrompts,
 				customModes,
-				customInstructions,
+				[customInstructions, intentHandshakeInstruction].filter(Boolean).join("\n\n"),
 				experiments,
 				language,
 				rooIgnoreInstructions,

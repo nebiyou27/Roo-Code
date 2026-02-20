@@ -26,6 +26,10 @@ const SIDE_EFFECT_TOOLS = new Set<string>([
 	"new_task",
 ])
 
+function hookError(error: "intent_required" | "scope_violation" | "intent_validation_failed", message: string): string {
+	return JSON.stringify({ error, message })
+}
+
 export class PreToolUse {
 	constructor(private readonly validator = new IntentValidator()) {}
 
@@ -38,12 +42,22 @@ export class PreToolUse {
 		}
 
 		if (!selectedIntentId) {
-			return { allowed: false, reason: "No selected intent. Call select_active_intent first." }
+			return {
+				allowed: false,
+				reason: hookError("intent_required", "No selected intent. Call select_active_intent first."),
+			}
 		}
 
 		const validation = await this.validator.validate(context.cwd, context.toolName, context.params)
 		if (!validation.allowed) {
-			return { allowed: false, reason: validation.reason, intentId: validation.intentId }
+			const code = validation.reason.startsWith("Scope Violation:")
+				? "scope_violation"
+				: "intent_validation_failed"
+			return {
+				allowed: false,
+				reason: hookError(code, validation.reason),
+				intentId: validation.intentId,
+			}
 		}
 
 		return { allowed: true, reason: "intent + scope validated", intentId: validation.intentId }

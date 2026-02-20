@@ -25,6 +25,7 @@ function normalizeScope(scope: string): string {
 
 export class IntentValidator {
 	private readonly intentsFileName = "active_intents.yaml"
+	private readonly intentIgnoreFileName = ".intentignore"
 
 	private async readIntentSpec(cwd: string): Promise<ActiveIntentSpec> {
 		const intentPath = path.join(cwd, this.intentsFileName)
@@ -39,6 +40,31 @@ export class IntentValidator {
 			const normalizedScope = path.resolve(cwd, normalizeScope(scope)).replace(/\\/g, "/").replace(/\/+$/, "")
 			return normalizedTarget === normalizedScope || normalizedTarget.startsWith(`${normalizedScope}/`)
 		})
+	}
+
+	private async readIntentIgnorePatterns(cwd: string): Promise<string[]> {
+		try {
+			const raw = await fs.readFile(path.join(cwd, this.intentIgnoreFileName), "utf8")
+			return raw
+				.split(/\r?\n/)
+				.map((line) => line.trim())
+				.filter((line) => line && !line.startsWith("#"))
+		} catch {
+			return []
+		}
+	}
+
+	private wildcardToRegex(pattern: string): RegExp {
+		const escaped = pattern
+			.replace(/[.+^${}()|[\]\\]/g, "\\$&")
+			.replace(/\*\*/g, ".*")
+			.replace(/\*/g, "[^/]*")
+		return new RegExp(`^${escaped}$`)
+	}
+
+	private isIgnoredByIntentIgnore(cwd: string, targetPath: string, patterns: string[]): boolean {
+		const rel = path.relative(cwd, targetPath).replace(/\\/g, "/")
+		return patterns.some((pattern) => this.wildcardToRegex(pattern).test(rel))
 	}
 
 	private getTargetPathFromToolParams(
@@ -92,10 +118,15 @@ export class IntentValidator {
 				return { allowed: true, reason: "No explicit target path to scope-check", intentId }
 			}
 
+			const intentIgnorePatterns = await this.readIntentIgnorePatterns(cwd)
+			if (this.isIgnoredByIntentIgnore(cwd, targetPath, intentIgnorePatterns)) {
+				return { allowed: true, reason: "Path is excluded by .intentignore", intentId }
+			}
+
 			if (!this.isPathInOwnedScope(cwd, targetPath, scope)) {
 				return {
 					allowed: false,
-					reason: `Target path '${targetPath}' is outside owned_scope`,
+					reason: `Scope Violation: ${intentId} is not authorized to edit ${path.basename(targetPath)}. Request scope expansion.`,
 					intentId,
 				}
 			}

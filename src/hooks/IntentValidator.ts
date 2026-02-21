@@ -7,6 +7,12 @@ import type { ToolParamName } from "../shared/tools"
 interface ActiveIntentSpec {
 	active_intent_id?: string
 	owned_scope?: string[]
+	status?: IntentStatus
+	intents?: Array<{
+		id: string
+		status?: IntentStatus
+		owned_scope?: string[]
+	}>
 }
 
 export interface IntentValidationResult {
@@ -14,6 +20,8 @@ export interface IntentValidationResult {
 	reason: string
 	intentId?: string
 }
+
+export type IntentStatus = "PENDING" | "IN_PROGRESS" | "COMPLETED" | "LOCKED"
 
 function normalizeScope(scope: string): string {
 	let normalized = scope.replace(/\\/g, "/").trim()
@@ -32,6 +40,53 @@ export class IntentValidator {
 		const raw = await fs.readFile(intentPath, "utf8")
 		const parsed = YAML.parse(raw) as ActiveIntentSpec | undefined
 		return parsed ?? {}
+	}
+
+	private async readIntentDocument(cwd: string): Promise<Record<string, unknown>> {
+		const intentPath = path.join(cwd, this.intentsFileName)
+		const raw = await fs.readFile(intentPath, "utf8")
+		return (YAML.parse(raw) as Record<string, unknown> | undefined) ?? {}
+	}
+
+	private async writeIntentDocument(cwd: string, doc: Record<string, unknown>): Promise<void> {
+		const intentPath = path.join(cwd, this.intentsFileName)
+		await fs.writeFile(intentPath, YAML.stringify(doc), "utf8")
+	}
+
+	async updateIntentStatus(cwd: string, intentId: string, newStatus: IntentStatus): Promise<boolean> {
+		try {
+			const doc = await this.readIntentDocument(cwd)
+			let updated = false
+
+			if (Array.isArray(doc.intents)) {
+				const nextIntents = doc.intents.map((entry) => {
+					if (
+						entry &&
+						typeof entry === "object" &&
+						"id" in entry &&
+						(entry as { id?: unknown }).id === intentId
+					) {
+						updated = true
+						return { ...(entry as Record<string, unknown>), status: newStatus }
+					}
+					return entry
+				})
+				doc.intents = nextIntents
+			}
+
+			if (!updated && doc.active_intent_id === intentId) {
+				doc.status = newStatus
+				updated = true
+			}
+
+			if (updated) {
+				await this.writeIntentDocument(cwd, doc)
+			}
+
+			return updated
+		} catch {
+			return false
+		}
 	}
 
 	private isPathInOwnedScope(cwd: string, targetPath: string, scopes: string[]): boolean {
@@ -91,6 +146,12 @@ export class IntentValidator {
 			const intentId = spec.active_intent_id?.trim()
 			const selectedIntentId = params.intent_id?.trim()
 
+			// Selection handshake transition: PENDING -> IN_PROGRESS
+			if (toolName === "select_active_intent" && selectedIntentId) {
+				await this.updateIntentStatus(cwd, selectedIntentId, "IN_PROGRESS")
+				return { allowed: true, reason: "Intent selected and marked IN_PROGRESS", intentId: selectedIntentId }
+			}
+
 			if (!intentId) {
 				return { allowed: false, reason: "No active intent ID found in active_intents.yaml" }
 			}
@@ -114,6 +175,12 @@ export class IntentValidator {
 
 			const targetPath = this.getTargetPathFromToolParams(cwd, toolName, params)
 			if (!targetPath) {
+				// Completion transition: IN_PROGRESS -> COMPLETED
+				if (toolName === "attempt_completion") {
+					await this.updateIntentStatus(cwd, intentId, "COMPLETED")
+					return { allowed: true, reason: "Intent marked COMPLETED", intentId }
+				}
+
 				// If a tool does not target an explicit path, we keep skeleton behavior permissive.
 				return { allowed: true, reason: "No explicit target path to scope-check", intentId }
 			}
@@ -124,6 +191,7 @@ export class IntentValidator {
 			}
 
 			if (!this.isPathInOwnedScope(cwd, targetPath, scope)) {
+				await this.updateIntentStatus(cwd, intentId, "LOCKED")
 				return {
 					allowed: false,
 					reason: `Scope Violation: ${intentId} is not authorized to edit ${path.basename(targetPath)}. Request scope expansion.`,

@@ -18,38 +18,44 @@ export interface PostToolUseContext {
 export class PostToolUse {
 	constructor(private readonly traceLogger = new TraceLogger()) {}
 
-	private isLintOrTestFailure(context: PostToolUseContext): boolean {
-		if (context.status !== "error") {
-			return false
+	private async ensureFileWithHeader(filePath: string, header: string): Promise<void> {
+		try {
+			await fs.access(filePath)
+		} catch {
+			await fs.mkdir(path.dirname(filePath), { recursive: true })
+			await fs.writeFile(filePath, `${header}\n\n`, "utf8")
 		}
-
-		const command = context.params.command?.toLowerCase() ?? ""
-		const reason = context.reason?.toLowerCase() ?? ""
-		const mentionsLintOrTest =
-			command.includes("lint") || command.includes("test") || reason.includes("lint") || reason.includes("test")
-
-		return context.toolName === "execute_command" && mentionsLintOrTest
 	}
 
-	private buildFixSuggestion(context: PostToolUseContext): string {
-		const reason = context.reason?.toLowerCase() ?? ""
-		if (reason.includes("lint")) {
-			return "Address lint findings and rerun the linter before continuing."
-		}
-		if (reason.includes("test")) {
-			return "Fix failing tests and rerun the test suite to confirm the behavior."
-		}
-		return "Review command output, apply a minimal fix, and rerun validation."
+	private async appendIntentMap(context: PostToolUseContext): Promise<void> {
+		const mapPath = path.join(context.cwd, ".orchestration", "intent_map.md")
+		await this.ensureFileWithHeader(mapPath, "# Intent Spatial Map\n> Maps business intents to physical files")
+
+		const timestamp = new Date().toISOString()
+		const filePath = context.params.path ?? context.params.file_path ?? "unknown"
+		const mutationClass =
+			((context.params as Record<string, string | undefined>).mutation_class as
+				| "AST_REFACTOR"
+				| "INTENT_EVOLUTION"
+				| undefined) ?? "INTENT_EVOLUTION"
+		const block = `## ${context.intentId ?? "INT-001"} → ${filePath}
+- Last modified: ${timestamp}
+- Mutation: ${mutationClass}
+- Tool: ${context.toolName}
+
+`
+		await fs.appendFile(mapPath, block, "utf8")
 	}
 
 	private async appendLessonLearned(context: PostToolUseContext): Promise<void> {
 		const timestamp = new Date().toISOString()
 		const claudePath = path.join(context.cwd, "CLAUDE.md")
+		await this.ensureFileWithHeader(claudePath, "# Shared Brain\n> Lessons learned across agent sessions")
 		const lesson = `## Lesson Learned - ${timestamp}
-- Tool: ${context.toolName}
 - Intent: ${context.intentId ?? "unknown"}
+- Tool: ${context.toolName}
 - Failure: ${context.reason ?? "Unknown failure"}
-- Fix: ${this.buildFixSuggestion(context)}
+- Action: Re-read file and retry with correct scope
 
 `
 		await fs.appendFile(claudePath, lesson, "utf8")
@@ -67,7 +73,11 @@ export class PostToolUse {
 			reason: context.reason,
 		})
 
-		if (this.isLintOrTestFailure(context)) {
+		if (context.toolName === "write_to_file" && context.status === "success") {
+			await this.appendIntentMap(context)
+		}
+
+		if (context.status !== "success") {
 			await this.appendLessonLearned(context)
 		}
 	}

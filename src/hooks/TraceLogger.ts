@@ -1,6 +1,7 @@
 import fs from "fs/promises"
 import path from "path"
-import { createHash } from "crypto"
+import crypto from "crypto"
+import { execSync } from "child_process"
 
 interface TraceEvent {
 	ts: string
@@ -16,9 +17,8 @@ interface TraceEvent {
 	start_line?: number
 	end_line?: number
 	content?: string
+	model_identifier?: string
 }
-
-type SemanticClassification = "AST_REFACTOR" | "INTENT_EVOLUTION"
 
 export class TraceLogger {
 	private readonly traceDir = ".orchestration"
@@ -36,7 +36,7 @@ export class TraceLogger {
 	}
 
 	private hashContent(content: string): string {
-		return createHash("sha256").update(content, "utf8").digest("hex")
+		return crypto.createHash("sha256").update(content, "utf8").digest("hex")
 	}
 
 	private async getContentForHash(cwd: string, event: TraceEvent, filePathValue?: string): Promise<string> {
@@ -52,17 +52,11 @@ export class TraceLogger {
 		return event.content ?? event.params.content ?? ""
 	}
 
-	private async classifyChange(cwd: string, filePathValue?: string): Promise<SemanticClassification | undefined> {
-		if (!filePathValue) {
-			return undefined
-		}
-
-		const resolvedPath = path.isAbsolute(filePathValue) ? filePathValue : path.resolve(cwd, filePathValue)
+	private getGitSha(cwd: string): string {
 		try {
-			await fs.access(resolvedPath)
-			return "AST_REFACTOR"
+			return execSync("git rev-parse HEAD", { cwd, encoding: "utf8" }).trim()
 		} catch {
-			return "INTENT_EVOLUTION"
+			return "unknown"
 		}
 	}
 
@@ -71,31 +65,50 @@ export class TraceLogger {
 		const filePath = path.join(directoryPath, this.traceFileName)
 
 		const filePathValue = event.file_path ?? event.params.path ?? event.params.file_path
-		const startLine = event.start_line ?? this.toNumber(event.params.start_line)
-		const endLine = event.end_line ?? this.toNumber(event.params.end_line)
 		const content = await this.getContentForHash(cwd, event, filePathValue)
 		const contentHash = this.hashContent(content)
-		const gitSha = event.git_sha ?? process.env.GIT_COMMIT_SHA ?? "unknown"
+		const gitSha = event.git_sha ?? this.getGitSha(cwd)
 		const intentId = event.intent_id ?? "INT-001"
-		const semanticClassification = await this.classifyChange(cwd, filePathValue)
+		const modelIdentifier =
+			event.model_identifier ??
+			(event.params as Record<string, string | undefined>).model_identifier ??
+			"unknown-model"
+		const relativePath = filePathValue
+			? path
+					.relative(cwd, path.isAbsolute(filePathValue) ? filePathValue : path.resolve(cwd, filePathValue))
+					.replace(/\\/g, "/")
+			: ""
 
 		const traceRecord = {
+			id: crypto.randomUUID(),
 			timestamp: event.ts,
-			intent_id: intentId,
-			file_path: filePathValue,
-			git_sha: gitSha,
-			start_line: startLine,
-			end_line: endLine,
-			content_hash: contentHash,
-			semantic_classification: semanticClassification,
-			related: [{ type: "specification", value: intentId }],
-			// Preserve existing operational context for debugging/audit.
-			task_id: event.task_id,
-			tool_use_id: event.tool_use_id,
-			tool_name: event.tool_name,
-			params: event.params,
-			status: event.status,
-			reason: event.reason,
+			vcs: {
+				revision_id: gitSha,
+			},
+			files: [
+				{
+					relative_path: relativePath,
+					conversations: [
+						{
+							contributor: {
+								entity_type: "AI",
+								model_identifier: modelIdentifier,
+							},
+							ranges: [
+								{
+									content_hash: `sha256:${contentHash}`,
+								},
+							],
+							related: [
+								{
+									type: "specification",
+									value: intentId,
+								},
+							],
+						},
+					],
+				},
+			],
 		}
 
 		await fs.mkdir(directoryPath, { recursive: true })

@@ -56,6 +56,12 @@ export class HookEngine {
 	}
 
 	async beforeToolUse(context: HookToolContext): Promise<BeforeToolResult> {
+		console.log("[HookEngine.beforeToolUse] incoming", {
+			toolName: context.toolName,
+			params: context.params,
+			rawIntentId: (context.params as Record<string, string | undefined>).intent_id,
+		})
+
 		const normalizedParams = { ...(context.params as Record<string, string | undefined>) }
 		const extractedIntentId = this.getIntentIdFromParams(normalizedParams)
 		if (extractedIntentId && !normalizedParams.intent_id) {

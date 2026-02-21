@@ -142,7 +142,25 @@ export class IntentValidator {
 		params: Partial<Record<ToolParamName, string>>,
 	): Promise<IntentValidationResult> {
 		try {
+			const intentPath = path.join(cwd, this.intentsFileName)
+			let intentFileExists = false
+			try {
+				await fs.access(intentPath)
+				intentFileExists = true
+			} catch {
+				intentFileExists = false
+			}
+
 			const spec = await this.readIntentSpec(cwd)
+			console.log("[IntentValidator.validate] context", {
+				cwd,
+				intentPath,
+				intentFileExists,
+				parsedYaml: spec,
+				toolName,
+				params,
+			})
+
 			const intentId = spec.active_intent_id?.trim()
 			const selectedIntentId = params.intent_id?.trim()
 

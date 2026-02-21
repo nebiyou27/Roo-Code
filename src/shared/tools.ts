@@ -81,6 +81,7 @@ export const toolParamNames = [
 	"files",
 	"line_ranges",
 	"intent_id",
+	"intentId", // backward compatibility alias for intent_id
 ] as const
 
 export type ToolParamName = (typeof toolParamNames)[number]

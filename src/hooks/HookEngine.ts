@@ -45,6 +45,10 @@ export class HookEngine {
 	private readonly selectedIntentByTask = new Map<string, string>()
 	private readonly registry: HookRegistry
 
+	private getIntentIdFromParams(params: Record<string, string | undefined>): string | undefined {
+		return params.intent_id?.trim() || params.intentId?.trim()
+	}
+
 	constructor() {
 		this.registry = new HookRegistry()
 		this.registry.register(new IntentValidationHook())
@@ -52,8 +56,14 @@ export class HookEngine {
 	}
 
 	async beforeToolUse(context: HookToolContext): Promise<BeforeToolResult> {
+		const normalizedParams = { ...(context.params as Record<string, string | undefined>) }
+		const extractedIntentId = this.getIntentIdFromParams(normalizedParams)
+		if (extractedIntentId && !normalizedParams.intent_id) {
+			normalizedParams.intent_id = extractedIntentId
+		}
+
 		if (context.toolName === "select_active_intent") {
-			const intentId = context.params.intent_id?.trim()
+			const intentId = this.getIntentIdFromParams(normalizedParams)
 			if (!intentId) {
 				return { allowed: false, reason: "select_active_intent requires intent_id" }
 			}
@@ -62,16 +72,15 @@ export class HookEngine {
 		}
 
 		const selectedIntentId = this.selectedIntentByTask.get(context.taskId)
-		const params = { ...context.params }
-		if (!params.intent_id && selectedIntentId) {
-			params.intent_id = selectedIntentId
+		if (!normalizedParams.intent_id && selectedIntentId) {
+			normalizedParams.intent_id = selectedIntentId
 		}
 
 		return this.registry.runBefore({
 			taskId: context.taskId,
 			cwd: context.cwd,
 			toolName: context.toolName,
-			params,
+			params: normalizedParams as HookToolContext["params"],
 			toolUseId: context.toolUseId,
 		})
 	}

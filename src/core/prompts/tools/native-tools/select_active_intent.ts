@@ -1,9 +1,6 @@
 import type OpenAI from "openai"
 
-const SELECT_ACTIVE_INTENT_DESCRIPTION = `Set the active intent context before running side-effect tools. Use this tool to declare which intent is currently being executed and to bind subsequent actions to that intent for traceability and policy checks.
-
-Parameters:
-- intent_id: (required) Identifier of the intent to activate.`
+const SELECT_ACTIVE_INTENT_DESCRIPTION = `Select an active intent before making any code changes. You MUST call this before any write_to_file or execute_command.`
 
 const INTENT_ID_DESCRIPTION = `Identifier of the intent to activate`
 

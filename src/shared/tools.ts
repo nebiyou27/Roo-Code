@@ -81,6 +81,7 @@ export const toolParamNames = [
 	"files",
 	"line_ranges",
 	"intent_id",
+	"intentId", // backward compatibility alias for intent_id
 ] as const
 
 export type ToolParamName = (typeof toolParamNames)[number]
@@ -284,6 +285,7 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	ask_followup_question: "ask questions",
 	attempt_completion: "complete tasks",
 	switch_mode: "switch modes",
+	select_active_intent: "select active intent",
 	new_task: "create new task",
 	codebase_search: "codebase search",
 	update_todo_list: "update todo list",
@@ -319,6 +321,7 @@ export const ALWAYS_AVAILABLE_TOOLS: ToolName[] = [
 	"ask_followup_question",
 	"attempt_completion",
 	"switch_mode",
+	"select_active_intent",
 	"new_task",
 	"update_todo_list",
 	"run_slash_command",

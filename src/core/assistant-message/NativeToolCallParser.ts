@@ -730,10 +730,18 @@ export class NativeToolCallParser {
 			// Track if legacy format was used (for telemetry)
 			let usedLegacyFormat = false
 
-			if (String(resolvedName) === "select_active_intent" && args.intent_id !== undefined) {
-				nativeArgs = {
-					intent_id: args.intent_id,
-				} as unknown as NativeArgsFor<TName>
+			if (String(resolvedName) === "select_active_intent") {
+				const parsedIntentId =
+					typeof args.intent_id === "string"
+						? args.intent_id
+						: typeof args.intentId === "string"
+							? args.intentId
+							: undefined
+				if (parsedIntentId !== undefined) {
+					nativeArgs = {
+						intent_id: parsedIntentId,
+					} as unknown as NativeArgsFor<TName>
+				}
 			}
 
 			switch (resolvedName) {

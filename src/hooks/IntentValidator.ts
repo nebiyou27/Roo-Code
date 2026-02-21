@@ -7,6 +7,12 @@ import type { ToolParamName } from "../shared/tools"
 interface ActiveIntentSpec {
 	active_intent_id?: string
 	owned_scope?: string[]
+	status?: IntentStatus
+	intents?: Array<{
+		id: string
+		status?: IntentStatus
+		owned_scope?: string[]
+	}>
 }
 
 export interface IntentValidationResult {
@@ -14,6 +20,8 @@ export interface IntentValidationResult {
 	reason: string
 	intentId?: string
 }
+
+export type IntentStatus = "PENDING" | "IN_PROGRESS" | "COMPLETED" | "LOCKED"
 
 function normalizeScope(scope: string): string {
 	let normalized = scope.replace(/\\/g, "/").trim()
@@ -25,12 +33,80 @@ function normalizeScope(scope: string): string {
 
 export class IntentValidator {
 	private readonly intentsFileName = "active_intents.yaml"
+	private readonly intentIgnoreFileName = ".intentignore"
+	private readonly orchestrationDir = ".orchestration"
+
+	private getIntentPathCandidates(cwd: string): string[] {
+		return [path.join(cwd, this.orchestrationDir, this.intentsFileName), path.join(cwd, this.intentsFileName)]
+	}
+
+	private async resolveIntentPath(cwd: string): Promise<string> {
+		const candidates = this.getIntentPathCandidates(cwd)
+		for (const candidate of candidates) {
+			try {
+				await fs.access(candidate)
+				return candidate
+			} catch {
+				// Try next candidate.
+			}
+		}
+		// Default to orchestration path for new writes.
+		return candidates[0]
+	}
 
 	private async readIntentSpec(cwd: string): Promise<ActiveIntentSpec> {
-		const intentPath = path.join(cwd, this.intentsFileName)
+		const intentPath = await this.resolveIntentPath(cwd)
 		const raw = await fs.readFile(intentPath, "utf8")
 		const parsed = YAML.parse(raw) as ActiveIntentSpec | undefined
 		return parsed ?? {}
+	}
+
+	private async readIntentDocument(cwd: string): Promise<Record<string, unknown>> {
+		const intentPath = await this.resolveIntentPath(cwd)
+		const raw = await fs.readFile(intentPath, "utf8")
+		return (YAML.parse(raw) as Record<string, unknown> | undefined) ?? {}
+	}
+
+	private async writeIntentDocument(cwd: string, doc: Record<string, unknown>): Promise<void> {
+		const intentPath = await this.resolveIntentPath(cwd)
+		await fs.mkdir(path.dirname(intentPath), { recursive: true })
+		await fs.writeFile(intentPath, YAML.stringify(doc), "utf8")
+	}
+
+	async updateIntentStatus(cwd: string, intentId: string, newStatus: IntentStatus): Promise<boolean> {
+		try {
+			const doc = await this.readIntentDocument(cwd)
+			let updated = false
+
+			if (Array.isArray(doc.intents)) {
+				const nextIntents = doc.intents.map((entry) => {
+					if (
+						entry &&
+						typeof entry === "object" &&
+						"id" in entry &&
+						(entry as { id?: unknown }).id === intentId
+					) {
+						updated = true
+						return { ...(entry as Record<string, unknown>), status: newStatus }
+					}
+					return entry
+				})
+				doc.intents = nextIntents
+			}
+
+			if (!updated && doc.active_intent_id === intentId) {
+				doc.status = newStatus
+				updated = true
+			}
+
+			if (updated) {
+				await this.writeIntentDocument(cwd, doc)
+			}
+
+			return updated
+		} catch {
+			return false
+		}
 	}
 
 	private isPathInOwnedScope(cwd: string, targetPath: string, scopes: string[]): boolean {
@@ -39,6 +115,31 @@ export class IntentValidator {
 			const normalizedScope = path.resolve(cwd, normalizeScope(scope)).replace(/\\/g, "/").replace(/\/+$/, "")
 			return normalizedTarget === normalizedScope || normalizedTarget.startsWith(`${normalizedScope}/`)
 		})
+	}
+
+	private async readIntentIgnorePatterns(cwd: string): Promise<string[]> {
+		try {
+			const raw = await fs.readFile(path.join(cwd, this.intentIgnoreFileName), "utf8")
+			return raw
+				.split(/\r?\n/)
+				.map((line) => line.trim())
+				.filter((line) => line && !line.startsWith("#"))
+		} catch {
+			return []
+		}
+	}
+
+	private wildcardToRegex(pattern: string): RegExp {
+		const escaped = pattern
+			.replace(/[.+^${}()|[\]\\]/g, "\\$&")
+			.replace(/\*\*/g, ".*")
+			.replace(/\*/g, "[^/]*")
+		return new RegExp(`^${escaped}$`)
+	}
+
+	private isIgnoredByIntentIgnore(cwd: string, targetPath: string, patterns: string[]): boolean {
+		const rel = path.relative(cwd, targetPath).replace(/\\/g, "/")
+		return patterns.some((pattern) => this.wildcardToRegex(pattern).test(rel))
 	}
 
 	private getTargetPathFromToolParams(
@@ -61,9 +162,32 @@ export class IntentValidator {
 		params: Partial<Record<ToolParamName, string>>,
 	): Promise<IntentValidationResult> {
 		try {
+			const intentCandidates = this.getIntentPathCandidates(cwd)
+			const intentPath = await this.resolveIntentPath(cwd)
+			const intentFileExists = await fs
+				.access(intentPath)
+				.then(() => true)
+				.catch(() => false)
+
 			const spec = await this.readIntentSpec(cwd)
+			console.log("[IntentValidator.validate] context", {
+				cwd,
+				intentCandidates,
+				intentPath,
+				intentFileExists,
+				parsedYaml: spec,
+				toolName,
+				params,
+			})
+
 			const intentId = spec.active_intent_id?.trim()
 			const selectedIntentId = params.intent_id?.trim()
+
+			// Selection handshake transition: PENDING -> IN_PROGRESS
+			if (toolName === "select_active_intent" && selectedIntentId) {
+				await this.updateIntentStatus(cwd, selectedIntentId, "IN_PROGRESS")
+				return { allowed: true, reason: "Intent selected and marked IN_PROGRESS", intentId: selectedIntentId }
+			}
 
 			if (!intentId) {
 				return { allowed: false, reason: "No active intent ID found in active_intents.yaml" }
@@ -88,14 +212,26 @@ export class IntentValidator {
 
 			const targetPath = this.getTargetPathFromToolParams(cwd, toolName, params)
 			if (!targetPath) {
+				// Completion transition: IN_PROGRESS -> COMPLETED
+				if (toolName === "attempt_completion") {
+					await this.updateIntentStatus(cwd, intentId, "COMPLETED")
+					return { allowed: true, reason: "Intent marked COMPLETED", intentId }
+				}
+
 				// If a tool does not target an explicit path, we keep skeleton behavior permissive.
 				return { allowed: true, reason: "No explicit target path to scope-check", intentId }
 			}
 
+			const intentIgnorePatterns = await this.readIntentIgnorePatterns(cwd)
+			if (this.isIgnoredByIntentIgnore(cwd, targetPath, intentIgnorePatterns)) {
+				return { allowed: true, reason: "Path is excluded by .intentignore", intentId }
+			}
+
 			if (!this.isPathInOwnedScope(cwd, targetPath, scope)) {
+				await this.updateIntentStatus(cwd, intentId, "LOCKED")
 				return {
 					allowed: false,
-					reason: `Target path '${targetPath}' is outside owned_scope`,
+					reason: `Scope Violation: ${intentId} is not authorized to edit ${path.basename(targetPath)}. Request scope expansion.`,
 					intentId,
 				}
 			}

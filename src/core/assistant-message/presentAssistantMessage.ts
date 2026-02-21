@@ -679,11 +679,20 @@ export async function presentAssistantMessage(cline: Task) {
 			let hookIntentId: string | undefined
 
 			if (!block.partial) {
+				const hookParams = { ...((block.params ?? {}) as any) }
+				const nativeIntentId =
+					typeof (block as any).nativeArgs?.intent_id === "string"
+						? (block as any).nativeArgs.intent_id
+						: undefined
+				if (!hookParams.intent_id && nativeIntentId) {
+					hookParams.intent_id = nativeIntentId
+				}
+
 				const beforeHook = await hookEngine.beforeToolUse({
 					taskId: cline.taskId,
 					cwd: cline.cwd,
 					toolName: String(block.name),
-					params: (block.params ?? {}) as any,
+					params: hookParams,
 					toolUseId: toolCallId,
 				})
 				hookIntentId = beforeHook.intentId
@@ -696,7 +705,7 @@ export async function presentAssistantMessage(cline: Task) {
 								taskId: cline.taskId,
 								cwd: cline.cwd,
 								toolName: String(block.name),
-								params: (block.params ?? {}) as any,
+								params: hookParams,
 								toolUseId: toolCallId,
 							},
 							{
@@ -844,6 +853,7 @@ export async function presentAssistantMessage(cline: Task) {
 					case "select_active_intent": {
 						const selectedIntentId =
 							(typeof block.params?.intent_id === "string" && block.params.intent_id) ||
+							(typeof (block.params as any)?.intentId === "string" && (block.params as any).intentId) ||
 							(typeof (block as any).nativeArgs?.intent_id === "string" &&
 								(block as any).nativeArgs.intent_id) ||
 							undefined

@@ -1,28 +1,55 @@
-import type { ToolParamName } from "../shared/tools"
 import { PostToolUse } from "./PostToolUse"
 import { PreToolUse } from "./PreToolUse"
+import type { BeforeToolResult, HookOutcome, HookToolContext, IHook } from "./index"
+import { HookRegistry } from "./index"
 
-export interface HookToolContext {
-	taskId: string
-	cwd: string
-	toolName: string
-	params: Partial<Record<ToolParamName, string>>
-	toolUseId?: string
+class IntentValidationHook implements IHook {
+	constructor(private readonly preToolUse = new PreToolUse()) {}
+
+	async beforeToolUse(context: HookToolContext): Promise<BeforeToolResult> {
+		return this.preToolUse.evaluate({
+			taskId: context.taskId,
+			cwd: context.cwd,
+			toolName: context.toolName,
+			params: context.params,
+		})
+	}
+
+	async afterToolUse(): Promise<void> {
+		// No-op: this hook only participates in pre tool validation.
+	}
 }
 
-export interface BeforeToolResult {
-	allowed: boolean
-	reason: string
-	intentId?: string
+class TraceAndLessonsHook implements IHook {
+	constructor(private readonly postToolUse = new PostToolUse()) {}
+
+	async beforeToolUse(): Promise<BeforeToolResult> {
+		return { allowed: true, reason: "post hook only" }
+	}
+
+	async afterToolUse(context: HookToolContext, outcome: HookOutcome): Promise<void> {
+		await this.postToolUse.record({
+			taskId: context.taskId,
+			cwd: context.cwd,
+			toolName: context.toolName,
+			params: context.params,
+			status: outcome.status,
+			reason: outcome.reason,
+			intentId: outcome.intentId,
+			toolUseId: context.toolUseId,
+		})
+	}
 }
 
 export class HookEngine {
 	private readonly selectedIntentByTask = new Map<string, string>()
+	private readonly registry: HookRegistry
 
-	constructor(
-		private readonly preToolUse = new PreToolUse(),
-		private readonly postToolUse = new PostToolUse(),
-	) {}
+	constructor() {
+		this.registry = new HookRegistry()
+		this.registry.register(new IntentValidationHook())
+		this.registry.register(new TraceAndLessonsHook())
+	}
 
 	async beforeToolUse(context: HookToolContext): Promise<BeforeToolResult> {
 		if (context.toolName === "select_active_intent") {
@@ -40,28 +67,17 @@ export class HookEngine {
 			params.intent_id = selectedIntentId
 		}
 
-		return this.preToolUse.evaluate({
+		return this.registry.runBefore({
 			taskId: context.taskId,
 			cwd: context.cwd,
 			toolName: context.toolName,
 			params,
+			toolUseId: context.toolUseId,
 		})
 	}
 
-	async afterToolUse(
-		context: HookToolContext,
-		outcome: { status: "success" | "denied" | "error"; reason?: string; intentId?: string },
-	): Promise<void> {
-		await this.postToolUse.record({
-			taskId: context.taskId,
-			cwd: context.cwd,
-			toolName: context.toolName,
-			params: context.params,
-			status: outcome.status,
-			reason: outcome.reason,
-			intentId: outcome.intentId,
-			toolUseId: context.toolUseId,
-		})
+	async afterToolUse(context: HookToolContext, outcome: HookOutcome): Promise<void> {
+		await this.registry.runAfter(context, outcome)
 	}
 }
 

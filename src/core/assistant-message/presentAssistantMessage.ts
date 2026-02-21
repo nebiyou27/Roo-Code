@@ -853,6 +853,7 @@ export async function presentAssistantMessage(cline: Task) {
 					case "select_active_intent": {
 						const selectedIntentId =
 							(typeof block.params?.intent_id === "string" && block.params.intent_id) ||
+							(typeof (block.params as any)?.intentId === "string" && (block.params as any).intentId) ||
 							(typeof (block as any).nativeArgs?.intent_id === "string" &&
 								(block as any).nativeArgs.intent_id) ||
 							undefined

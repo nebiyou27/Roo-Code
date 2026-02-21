@@ -34,22 +34,42 @@ function normalizeScope(scope: string): string {
 export class IntentValidator {
 	private readonly intentsFileName = "active_intents.yaml"
 	private readonly intentIgnoreFileName = ".intentignore"
+	private readonly orchestrationDir = ".orchestration"
+
+	private getIntentPathCandidates(cwd: string): string[] {
+		return [path.join(cwd, this.orchestrationDir, this.intentsFileName), path.join(cwd, this.intentsFileName)]
+	}
+
+	private async resolveIntentPath(cwd: string): Promise<string> {
+		const candidates = this.getIntentPathCandidates(cwd)
+		for (const candidate of candidates) {
+			try {
+				await fs.access(candidate)
+				return candidate
+			} catch {
+				// Try next candidate.
+			}
+		}
+		// Default to orchestration path for new writes.
+		return candidates[0]
+	}
 
 	private async readIntentSpec(cwd: string): Promise<ActiveIntentSpec> {
-		const intentPath = path.join(cwd, this.intentsFileName)
+		const intentPath = await this.resolveIntentPath(cwd)
 		const raw = await fs.readFile(intentPath, "utf8")
 		const parsed = YAML.parse(raw) as ActiveIntentSpec | undefined
 		return parsed ?? {}
 	}
 
 	private async readIntentDocument(cwd: string): Promise<Record<string, unknown>> {
-		const intentPath = path.join(cwd, this.intentsFileName)
+		const intentPath = await this.resolveIntentPath(cwd)
 		const raw = await fs.readFile(intentPath, "utf8")
 		return (YAML.parse(raw) as Record<string, unknown> | undefined) ?? {}
 	}
 
 	private async writeIntentDocument(cwd: string, doc: Record<string, unknown>): Promise<void> {
-		const intentPath = path.join(cwd, this.intentsFileName)
+		const intentPath = await this.resolveIntentPath(cwd)
+		await fs.mkdir(path.dirname(intentPath), { recursive: true })
 		await fs.writeFile(intentPath, YAML.stringify(doc), "utf8")
 	}
 
@@ -142,18 +162,17 @@ export class IntentValidator {
 		params: Partial<Record<ToolParamName, string>>,
 	): Promise<IntentValidationResult> {
 		try {
-			const intentPath = path.join(cwd, this.intentsFileName)
-			let intentFileExists = false
-			try {
-				await fs.access(intentPath)
-				intentFileExists = true
-			} catch {
-				intentFileExists = false
-			}
+			const intentCandidates = this.getIntentPathCandidates(cwd)
+			const intentPath = await this.resolveIntentPath(cwd)
+			const intentFileExists = await fs
+				.access(intentPath)
+				.then(() => true)
+				.catch(() => false)
 
 			const spec = await this.readIntentSpec(cwd)
 			console.log("[IntentValidator.validate] context", {
 				cwd,
+				intentCandidates,
 				intentPath,
 				intentFileExists,
 				parsedYaml: spec,
